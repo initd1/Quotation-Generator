@@ -16,14 +16,15 @@
         .container {
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
         }
-        .quotation-table input, .quotation-table textarea {
+        /* Applied to all dynamic inputs */
+        .quotation-table input, .quotation-table textarea, #clientDetails {
             padding: 0.5rem;
             border-radius: 0.375rem; /* rounded-md */
             border: 1px solid #d1d5db; /* border-gray-300 */
             width: 100%;
             transition: border-color 0.15s ease-in-out;
         }
-        .quotation-table input:focus, .quotation-table textarea:focus {
+        .quotation-table input:focus, .quotation-table textarea:focus, #clientDetails:focus {
             outline: none;
             border-color: #3b82f6; /* ring-blue-500 */
         }
@@ -36,6 +37,10 @@
         input[type=number] {
             -moz-appearance: textfield; /* Firefox */
             text-align: right;
+        }
+        /* Force single-line inputs to take up more vertical space in the table */
+        .itemDescription {
+            height: 40px; /* Taller input for better description visibility */
         }
 
         /* Print Styles */
@@ -74,6 +79,10 @@
             .calculated-text {
                 border: none;
             }
+            /* Hide height added for inputs used as textareas */
+            #clientDetails, .itemDescription {
+                height: auto !important;
+            }
         }
     </style>
 </head>
@@ -82,9 +91,11 @@
     <div id="app" class="max-w-4xl mx-auto bg-white p-6 md:p-10 rounded-xl container">
 
         <!-- Action Buttons (No Print) -->
-        <div class="flex flex-wrap gap-3 justify-end mb-6 no-print">
-            <button id="saveButton" class="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition duration-150 ease-in-out">
-                Save Draft
+        <div class="flex flex-wrap gap-3 justify-end items-center mb-6 no-print">
+            <span id="autosaveStatus" class="text-sm text-gray-500 italic hidden md:block">Draft autosaved.</span>
+            
+            <button id="saveSuggestionsButton" class="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition duration-150 ease-in-out">
+                Save & Update Suggestions
             </button>
             <button id="clearButton" class="px-4 py-2 bg-red-500 text-white font-semibold rounded-lg shadow-md hover:bg-red-600 transition duration-150 ease-in-out">
                 Clear All
@@ -119,7 +130,18 @@
         <!-- Client Details -->
         <section class="mb-8 p-4 border rounded-lg bg-gray-50">
             <h3 class="text-lg font-semibold mb-3 text-gray-700">Customer Details (TO)</h3>
-            <textarea id="clientDetails" rows="4" placeholder="Client Name, Address, Contact, and GSTIN..." class="w-full p-2 border rounded-md"></textarea>
+            <!-- CHANGED to input type=text to enable datalist suggestions -->
+            <input 
+                type="text"
+                id="clientDetails" 
+                placeholder="Client Name, Address, Contact, and GSTIN..." 
+                class="w-full p-2 border rounded-md h-24 text-sm"
+                list="clientSuggestions"
+                onchange="applyClientSuggestion(this.value)"
+            >
+            
+            <!-- Datalist for Client Suggestions -->
+            <datalist id="clientSuggestions"></datalist>
         </section>
         
         <!-- Item Details Table -->
@@ -178,7 +200,6 @@
 
         <!-- Footer / Terms -->
         <footer class="mt-12 pt-6 border-t">
-            <h4 class="text-md font-semibold mb-2 text-gray-700">Terms & Conditions:</h4>
             <textarea id="terms" rows="3" class="w-full text-xs p-2 border rounded-md" placeholder="1. Payment is due within 30 days. 2. Price is valid for 15 days from the quotation date.">1. Payment is due within 30 days. 2. Price is valid for 15 days from the quotation date.</textarea>
             
             <div class="flex justify-end mt-8">
@@ -190,10 +211,19 @@
         </footer>
     </div>
 
+    <!-- Datalist for Item Suggestions (Shared for all item description fields) -->
+    <datalist id="itemSuggestions"></datalist>
+
     <script>
         // Constants and Globals
         const QUOTATION_KEY = 'modernQuotationData';
+        const HISTORY_CLIENT_KEY = 'QUOTATION_CLIENT_SUGGESTIONS';
+        const HISTORY_ITEM_KEY = 'QUOTATION_ITEM_SUGGESTIONS';
         let serialNoCounter = 1;
+        
+        // Storage for suggestions to apply rate/gst on selection
+        let clientSuggestionMap = {};
+        let itemSuggestionMap = {};
 
         // --- Utility Functions for Data Persistence ---
 
@@ -217,14 +247,15 @@
             });
 
             localStorage.setItem(QUOTATION_KEY, JSON.stringify(quotationData));
-            showFeedback("Draft saved automatically.", "green");
+            showFeedback("Draft autosaved.", "green");
         }
 
         function loadData() {
             const savedData = localStorage.getItem(QUOTATION_KEY);
+            // Set default date
+            document.getElementById('quotationDate').valueAsDate = new Date();
+            
             if (!savedData) {
-                // Set default date and initial row if no data exists
-                document.getElementById('quotationDate').valueAsDate = new Date();
                 addRow(); 
                 return;
             }
@@ -233,7 +264,10 @@
                 const data = JSON.parse(savedData);
                 document.getElementById('quotationNo').value = data.quotationNo || "Q/2024/001";
                 document.getElementById('quotationDate').value = data.quotationDate || new Date().toISOString().substring(0, 10);
+                
+                // Set value for the new input field
                 document.getElementById('clientDetails').value = data.clientDetails || '';
+                
                 document.getElementById('terms').value = data.terms || '';
 
                 // Clear existing rows and load saved items
@@ -243,29 +277,138 @@
                 
                 if (data.items && data.items.length > 0) {
                     data.items.forEach(item => {
-                        // Pass saved values to addRow to rebuild the table
                         addRow(item.description, item.qty, item.rate, item.gstRate);
                     });
                 } else {
-                    addRow(); // Add one empty row if items array is empty
+                    addRow(); 
                 }
                 
-                calculateTotals();
+                calculateTotals(false); // Don't save data on load
                 showFeedback("Draft loaded successfully.", "blue");
             } catch (error) {
                 console.error("Error loading data from localStorage:", error);
-                addRow(); // Add default row on error
+                addRow();
                 document.getElementById('quotationDate').valueAsDate = new Date();
             }
         }
         
         function clearAllData() {
-            if (confirm("Are you sure you want to clear the entire quotation and saved draft?")) {
+            // Replaced alert with confirm for browser compatibility
+            if (confirm("Are you sure you want to clear the entire quotation and start a new one?")) {
                 localStorage.removeItem(QUOTATION_KEY);
-                window.location.reload(); // Simple way to reset the UI
+                // Simple way to reset the UI, forces reload and a clean start
+                window.location.reload(); 
             }
         }
         
+        // --- Suggestion History Logic ---
+
+        function loadSuggestions() {
+            // Load Client Suggestions
+            const clientList = JSON.parse(localStorage.getItem(HISTORY_CLIENT_KEY) || '[]');
+            const clientDatalist = document.getElementById('clientSuggestions');
+            clientDatalist.innerHTML = '';
+            clientSuggestionMap = {}; // Reset map
+
+            clientList.forEach(client => {
+                const option = document.createElement('option');
+                // Store the full details as the value
+                option.value = client.details; 
+                clientDatalist.appendChild(option);
+            });
+
+            // Load Item Suggestions
+            const itemList = JSON.parse(localStorage.getItem(HISTORY_ITEM_KEY) || '[]');
+            const itemDatalist = document.getElementById('itemSuggestions');
+            itemDatalist.innerHTML = '';
+            itemSuggestionMap = {}; // Reset map
+            
+            itemList.forEach(item => {
+                const option = document.createElement('option');
+                option.value = item.description;
+                itemDatalist.appendChild(option);
+                // Map the description to its associated rate and GST for quick application
+                itemSuggestionMap[item.description] = { 
+                    rate: item.rate, 
+                    gstRate: item.gstRate 
+                };
+            });
+        }
+        
+        function updateSuggestions() {
+            const currentClientDetails = document.getElementById('clientDetails').value.trim();
+            const currentItems = Array.from(document.querySelectorAll('#quotationTableBody tr'));
+
+            // 1. Update Client Suggestions
+            if (currentClientDetails) {
+                let clientList = JSON.parse(localStorage.getItem(HISTORY_CLIENT_KEY) || '[]');
+                
+                // Add new client details if it doesn't already exist (based on details string)
+                if (!clientList.some(c => c.details === currentClientDetails)) {
+                    clientList.push({ details: currentClientDetails, timestamp: Date.now() });
+                    // Keep the list manageable (e.g., last 20 clients)
+                    clientList.sort((a, b) => b.timestamp - a.timestamp);
+                    localStorage.setItem(HISTORY_CLIENT_KEY, JSON.stringify(clientList.slice(0, 20)));
+                }
+            }
+
+            // 2. Update Item Suggestions
+            let itemList = JSON.parse(localStorage.getItem(HISTORY_ITEM_KEY) || '[]');
+            const existingDescriptions = new Set(itemList.map(item => item.description));
+            
+            currentItems.forEach(row => {
+                const description = row.querySelector('.itemDescription').value.trim();
+                const rate = row.querySelector('.itemRate').value;
+                const gstRate = row.querySelector('.gstRate').value;
+
+                if (description) {
+                    if (!existingDescriptions.has(description)) {
+                        itemList.push({ 
+                            description: description, 
+                            rate: rate, 
+                            gstRate: gstRate, 
+                            timestamp: Date.now() 
+                        });
+                    } else {
+                        // If it exists, update its rate/gst and timestamp to keep it fresh
+                        const existingItem = itemList.find(item => item.description === description);
+                        if (existingItem) {
+                            existingItem.rate = rate;
+                            existingItem.gstRate = gstRate;
+                            existingItem.timestamp = Date.now();
+                        }
+                    }
+                }
+            });
+
+            // Keep the list manageable (e.g., last 50 items)
+            itemList.sort((a, b) => b.timestamp - a.timestamp);
+            localStorage.setItem(HISTORY_ITEM_KEY, JSON.stringify(itemList.slice(0, 50)));
+
+            loadSuggestions(); // Reload the datalists on the page
+            showFeedback("Suggestions updated and quotation saved.", "green");
+        }
+
+        // Function to apply rate and GST when an item is selected from suggestion
+        function applyItemSuggestion(inputElement) {
+            const description = inputElement.value.trim();
+            const row = inputElement.closest('tr');
+            
+            if (itemSuggestionMap[description]) {
+                const suggestion = itemSuggestionMap[description];
+                row.querySelector('.itemRate').value = suggestion.rate;
+                row.querySelector('.gstRate').value = suggestion.gstRate;
+                calculateTotals();
+                showFeedback(`Rate and GST applied for item: ${description}`, "blue");
+            }
+        }
+        
+        // This function is defined for client details but currently just saves the data
+        function applyClientSuggestion(value) {
+            saveData(); 
+            // The datalist applies the value directly, so no extra logic is needed here for value setting.
+        }
+
         // --- Core Application Logic ---
 
         function createRow(description = '', qty = 1, rate = 1, gstRate = 18) {
@@ -279,7 +422,13 @@
             row.innerHTML = `
                 <td class="border p-2 text-center text-gray-600 font-semibold">${serialNoCounter++}</td>
                 <td class="border p-2">
-                    <textarea class="itemDescription text-sm" rows="1" placeholder="Item Name / Service details">${description}</textarea>
+                    <!-- CHANGED to input type=text to enable datalist suggestions. Removed inline onchange handler. -->
+                    <input type="text" 
+                        class="itemDescription text-sm" 
+                        placeholder="Item Name / Service details"
+                        list="itemSuggestions"
+                        value="${description}"
+                    >
                 </td>
                 <td class="border p-2">
                     <input type="number" class="itemQty text-right" value="${parseFloat(qty) || 1}" min="0.01">
@@ -311,20 +460,19 @@
         function addRow(description, qty, rate, gstRate) {
             const tbody = document.getElementById('quotationTableBody');
             tbody.appendChild(createRow(description, qty, rate, gstRate));
+            reindexRows();
             calculateTotals();
         }
 
         function removeRow(rowId) {
             const row = document.getElementById(rowId);
             if (row) {
-                // Before removing, we need to reset the serial number sequence
                 const tbody = document.getElementById('quotationTableBody');
                 tbody.removeChild(row);
                 
-                // Recalculate totals and reset S.No column
                 reindexRows();
                 calculateTotals();
-                saveData(); // Save state after removing
+                saveData();
             }
         }
         
@@ -336,12 +484,11 @@
             });
         }
 
-        function calculateTotals() {
+        function calculateTotals(shouldSave = true) {
             const rows = document.querySelectorAll('#quotationTableBody tr');
             let amountTotal = 0, cgstTotal = 0, sgstTotal = 0, grandTotal = 0;
             
             for (let row of rows) {
-                // Use || 0 to safely handle empty or invalid inputs
                 let qty = parseFloat(row.querySelector('.itemQty').value) || 0;
                 let rate = parseFloat(row.querySelector('.itemRate').value) || 0;
                 let gstRate = parseFloat(row.querySelector('.gstRate').value) || 0;
@@ -371,11 +518,9 @@
             
             // --- Final Totals with Rounding ---
             let roundUp = Math.ceil(grandTotal) - grandTotal;
-            // Handle cases where grandTotal is already an integer (roundUp will be 0)
-            if (Math.abs(roundUp) < 0.005) { // Check if rounding is negligible
+            if (Math.abs(roundUp) < 0.005) { 
                 roundUp = 0;
             } else {
-                // Only round up if it's positive, otherwise round down for negative
                 roundUp = (grandTotal > 0 ? Math.ceil(grandTotal) : Math.floor(grandTotal)) - grandTotal;
             }
 
@@ -388,11 +533,12 @@
             document.getElementById('sumGrandTotal').textContent = grandTotal.toFixed(2);
             
             document.getElementById('sumRoundUp').textContent = roundUp.toFixed(2);
-            // Display final total without decimals as it is rounded to the nearest integer
             document.getElementById('sumFinalTotal').textContent = Math.round(finalTotal);
 
-            // Save data automatically on calculation
-            saveData();
+            // Save data automatically only if permitted
+            if (shouldSave) {
+                saveData();
+            }
         }
 
         function printDocument() {
@@ -400,17 +546,31 @@
         }
         
         function showFeedback(message, type) {
-            // Simple visual feedback mechanism (could be improved with a proper toast component)
-            console.log(`[${type.toUpperCase()}] ${message}`);
+            const statusElement = document.getElementById('autosaveStatus');
+            statusElement.textContent = message;
+            statusElement.classList.remove('text-red-500', 'text-green-500', 'text-blue-500', 'hidden');
+            
+            if (type === 'green') statusElement.classList.add('text-green-500');
+            else if (type === 'blue') statusElement.classList.add('text-blue-500');
+            else if (type === 'red') statusElement.classList.add('text-red-500');
+
+            setTimeout(() => {
+                statusElement.textContent = 'Draft autosaved.';
+                statusElement.classList.remove('text-green-500', 'text-blue-500', 'text-red-500');
+                statusElement.classList.add('text-gray-500');
+            }, 3000);
         }
 
         // --- Event Binding (Modern JS) ---
         document.addEventListener('DOMContentLoaded', () => {
             
-            // 1. Load data first
+            // 1. Load suggestions first
+            loadSuggestions();
+            
+            // 2. Load draft data
             loadData();
 
-            // 2. Bind actions for dynamic item table (using event delegation for efficiency)
+            // 3. Bind actions for dynamic item table (using event delegation)
             document.getElementById('quotationTableBody').addEventListener('click', (event) => {
                 const removeButton = event.target.closest('.removeRowBtn');
                 if (removeButton) {
@@ -419,33 +579,44 @@
                 }
             });
 
-            // Input event delegation for recalculation and autosave
+            // 4. Input event delegation for recalculation and autosave
             document.getElementById('app').addEventListener('input', (event) => {
                 const target = event.target;
                 
-                // Check if the input is one of the calculation-relevant fields
+                // Only trigger recalculation and save for necessary fields
                 if (target.closest('#quotationTableBody') || 
                     target.id === 'quotationNo' ||
                     target.id === 'quotationDate' ||
                     target.id === 'clientDetails' ||
                     target.id === 'terms') 
                 {
-                    calculateTotals(); // Triggers saveData() inside
+                    calculateTotals(); 
                 }
             });
 
-            // 3. Bind major buttons
+            // NEW: Event delegation for item suggestion autofill logic (on change)
+            document.getElementById('quotationTableBody').addEventListener('change', (event) => {
+                const target = event.target;
+                // Check if the change occurred on an item description field that uses the datalist
+                if (target.classList.contains('itemDescription') && target.list?.id === 'itemSuggestions') {
+                    // Call the autofill function
+                    applyItemSuggestion(target);
+                }
+            });
+
+
+            // 5. Bind major buttons
             document.getElementById('addRowButton').addEventListener('click', () => addRow());
             document.getElementById('printButton').addEventListener('click', printDocument);
             document.getElementById('clearButton').addEventListener('click', clearAllData);
             
-            // Explicit Save button (also triggers calculateTotals which saves data)
-            document.getElementById('saveButton').addEventListener('click', () => {
-                calculateTotals(); 
-                showFeedback("Quotation manually saved!", "green");
+            // New: Save to history/suggestions button
+            document.getElementById('saveSuggestionsButton').addEventListener('click', () => {
+                calculateTotals(); // Ensure latest data is calculated and saved to draft
+                updateSuggestions(); // Update suggestion history
             });
             
-            // Re-index rows after initial load (if necessary, though addRow does it)
+            // Ensure initial indexing is correct
             reindexRows();
         });
 
